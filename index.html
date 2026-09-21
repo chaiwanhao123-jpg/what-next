@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f6f5ef">
+    <title>What Next? — Your study session</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="styles.css">
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="masthead">
+        <a class="brand" href="#" id="home-link" aria-label="What Next? Go to plan">What Next<span>?</span></a>
+        <span class="masthead-note">A little direction for studying alone.</span>
+      </header>
+      <div class="session-bar">
+        <nav aria-label="Session steps"><span id="plan-step">01 / Plan</span><span class="step-line" aria-hidden="true"></span><span id="focus-step">02 / Focus</span></nav>
+        <span id="save-status" role="status"></span>
+      </div>
+      <aside id="storage-warning" class="warning" hidden aria-label="Storage problem">
+        <p id="storage-message"></p>
+        <div class="button-row">
+          <button id="download-saved" type="button" class="secondary" hidden>Download unreadable saved data</button>
+          <button id="retry-save" type="button" class="secondary" hidden>Retry saving</button>
+          <button id="replace-saved" type="button" class="secondary" hidden>Replace saved data…</button>
+        </div>
+      </aside>
+      <div id="feedback" class="feedback" hidden>
+        <span id="feedback-text" role="status"></span>
+        <button id="undo-button" class="text-button" type="button">Undo</button>
+      </div>
+      <main id="main"></main>
+      <footer>Kept in this browser, on this device. No account, no sync.<br>Clearing browser data may remove your tasks and progress.</footer>
+    </div>
+    <dialog id="end-dialog" aria-labelledby="end-title">
+      <form id="end-form">
+        <p class="eyebrow">Leave yourself a starting point</p>
+        <h2 id="end-title">Pick up here next time.</h2>
+        <p>Your current task will stay unfinished.</p>
+        <label for="left-off">Where I left off <span class="optional">(optional)</span></label>
+        <textarea id="left-off" name="note" rows="4" placeholder="e.g. Finished part (a). Start with the diagram in part (b)."></textarea>
+        <div class="button-row dialog-actions"><button type="button" id="cancel-end" class="secondary">Keep studying</button><button class="primary" type="submit">Save note & end session</button></div>
+      </form>
+    </dialog>
+    <dialog id="replace-dialog" aria-labelledby="replace-title">
+      <h2 id="replace-title">Replace the saved copy?</h2>
+      <p>This replaces the unreadable saved data with the tasks currently shown. Download the unreadable copy first if you want to keep it.</p>
+      <div class="button-row dialog-actions"><button id="cancel-replace" class="secondary" type="button">Cancel</button><button id="confirm-replace" class="primary" type="button">Replace with current tasks</button></div>
+    </dialog>
+    <noscript>This app needs JavaScript to keep your study queue. Enable JavaScript and reload.</noscript>
+  </body>
+</html>
