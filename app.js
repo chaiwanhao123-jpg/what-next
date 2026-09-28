@@ -1,5 +1,6 @@
 import { transition, pendingTasks, currentTask, focusQueue } from "./state.js";
 import { createStorage } from "./storage.js";
+import { timerAt, formatDuration } from "./timer.js";
 
 const $ = id => document.getElementById(id);
 const storage = createStorage(() => window.localStorage);
@@ -9,6 +10,9 @@ let storageIssue = loaded.issue;
 let saveLabel = storageIssue ? "Not saved · this tab only" : state.tasks.length ? "Saved in this browser" : "Browser-local storage";
 let editingId = null;
 let draft = { title: "", module: "", firstAction: "" };
+let thoughtDraft = "";
+let thoughtsOpen = false;
+let thoughtNotice = "";
 
 // textContent treats input as text, never as HTML or executable code.
 function element(tag, className = "", text = "") {
@@ -52,13 +56,16 @@ function updateStorageUI() {
 }
 
 function recordSave(result) {
+  const label = result.ok ? "Saved in this browser" : "Not saved · this tab only";
+  // Timer checkpoints shouldn't repeat the same screen-reader announcement.
+  if (storageIssue === result.issue && saveLabel === label) return;
   storageIssue = result.issue;
-  saveLabel = result.ok ? "Saved in this browser" : "Not saved · this tab only";
+  saveLabel = label;
   updateStorageUI();
 }
 
 function dispatch(action, focusId) {
-  state = transition(state, action);
+  state = transition(state, { ...action, now: Date.now() });
   recordSave(storage.save(state));
   render();
   if (focusId) {
@@ -73,8 +80,110 @@ function renderFeedback() {
   $("feedback").hidden = !state.undo;
   if (!state.undo) return;
   const undo = state.undo;
-  const title = undo.kind === "delete" ? undo.task.title : state.tasks.find(task => task.id === undo.taskId)?.title;
-  $("feedback-text").textContent = `${undo.kind === "delete" ? "Deleted" : "Completed"}: ${title}`;
+  const title = undo.kind === "thought-delete" ? undo.thought.text : undo.kind === "delete" ? undo.task.title : state.tasks.find(task => task.id === undo.taskId)?.title;
+  $("feedback-text").textContent = `${undo.kind === "complete" ? "Completed" : "Deleted"}: ${title}`;
+}
+
+function renderTimer() {
+  const panel = element("section", "study-timer");
+  panel.setAttribute("aria-label", "Study timer");
+  const running = state.timer.runningSince !== null;
+  const numbers = element("div", "timer-numbers");
+  for (const [id, label] of [["study-time", "Study time"], ["stretch-time", running ? "This stretch" : "Last stretch"]]) {
+    const group = element("div");
+    group.append(element("p", "eyebrow", label));
+    const value = element("span", "timer-value", "00:00");
+    value.id = id;
+    // Changing seconds should not be announced every second.
+    value.setAttribute("aria-live", "off");
+    group.append(value);
+    numbers.append(group);
+  }
+  panel.append(numbers, element("p", "timer-status", running ? "Timing your study · pause when you take a break." : "Paused · your study time is kept."));
+  const controls = element("div", "button-row");
+  if (state.view === "focus" && currentTask(state)) {
+    const toggle = button(running ? "Pause for a break" : "Resume studying", "secondary", () => dispatch({ type: running ? "timer-pause" : "timer-resume" }, "timer-toggle"));
+    toggle.id = "timer-toggle";
+    controls.append(toggle);
+  }
+  const reset = button("Reset time…", "text-button", () => $("reset-time-dialog").showModal());
+  reset.id = "reset-time";
+  reset.disabled = !running && state.timer.elapsedMs === 0;
+  controls.append(reset);
+  panel.append(controls, element("p", "quiet-note", "Total stays until you reset it. Resuming begins a new stretch."));
+  return panel;
+}
+
+function updateTimerDisplay() {
+  const time = timerAt(state.timer, Date.now());
+  if ($("study-time")) $("study-time").textContent = formatDuration(time.elapsedMs);
+  if ($("stretch-time")) $("stretch-time").textContent = formatDuration(time.stretchMs);
+}
+
+function renderThoughts() {
+  const panel = element("section", "later-panel");
+  panel.setAttribute("aria-labelledby", "later-title");
+  const title = element("h2", "", "For later");
+  title.id = "later-title";
+  panel.append(title, element("p", "later-description", "Something on your mind? Leave it here and come back after studying."));
+  const form = element("form", "thought-form");
+  const label = element("label", "", "Something to look up later");
+  label.htmlFor = "thought-text";
+  const input = element("textarea");
+  input.id = "thought-text";
+  input.rows = 2;
+  input.required = true;
+  input.placeholder = "e.g. Find out how that sorting animation works";
+  input.value = thoughtDraft;
+  input.addEventListener("input", () => { thoughtDraft = input.value; input.setCustomValidity(""); });
+  const submit = element("button", "secondary", "Add thought");
+  submit.type = "submit";
+  form.append(label, input, submit);
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    if (!input.value.trim()) {
+      input.setCustomValidity("Write a thought before adding it.");
+      input.reportValidity();
+      return;
+    }
+    const text = input.value;
+    thoughtDraft = "";
+    thoughtNotice = "Added to your list.";
+    dispatch({ type: "thought-add", id: crypto.randomUUID(), text }, "thought-text");
+  });
+  panel.append(form);
+  const notice = element("p", "quiet-note", thoughtNotice);
+  notice.setAttribute("role", "status");
+  panel.append(notice);
+  const details = element("details", "thought-details");
+  details.open = thoughtsOpen;
+  details.addEventListener("toggle", () => { if (details.isConnected) thoughtsOpen = details.open; });
+  const remaining = state.thoughts.filter(thought => !thought.reviewed).length;
+  const summary = element("summary", "", `Your list · ${remaining} to review · ${state.thoughts.length} total`);
+  summary.id = "thought-list-toggle";
+  details.append(summary);
+  if (!state.thoughts.length) details.append(element("p", "quiet-note", "No thoughts saved yet."));
+  const list = element("ul", "thought-list");
+  for (const thought of state.thoughts) {
+    const row = element("li", thought.reviewed ? "thought-row reviewed" : "thought-row");
+    const check = element("input");
+    check.type = "checkbox";
+    check.id = `review-${thought.id}`;
+    check.checked = thought.reviewed;
+    check.setAttribute("aria-label", `Reviewed: ${thought.text}`);
+    check.addEventListener("change", () => dispatch({ type: "thought-review", id: thought.id }, check.id));
+    const label = element("label", "thought-label", thought.text);
+    label.htmlFor = check.id;
+    label.append(element("span", "thought-review-hint", thought.reviewed ? "Reviewed" : "Mark reviewed when you're done"));
+    row.append(check, label, button("Delete", "text-button delete-button", () => {
+      thoughtNotice = "";
+      dispatch({ type: "thought-delete", id: thought.id }, "undo-button");
+    }, `Delete thought: ${thought.text}`));
+    list.append(row);
+  }
+  details.append(list);
+  panel.append(details);
+  return panel;
 }
 
 function taskMeta(task, parent) {
@@ -171,6 +280,7 @@ function renderTaskForm() {
 
 function renderPlan(main) {
   main.append(heading("Decide now. Settle in.", "Put your tasks in order. When you’re ready, take them one at a time."));
+  if (state.timer.elapsedMs > 0) main.append(renderTimer());
   const layout = element("div", "plan-layout");
   const queue = element("section", "plan-queue");
   const pending = pendingTasks(state);
@@ -213,6 +323,7 @@ function renderFocus(main) {
   if (!task) {
     const complete = element("section", "completion");
     complete.append(element("span", "completion-mark", state.tasks.length ? "✓" : "·"), element("p", "eyebrow", state.tasks.length ? "Nothing left in the queue" : "A fresh start"), heading(state.tasks.length ? "That’s your plan, done." : "Your queue is empty.", state.tasks.length ? "You can stop here. Add something else whenever you’re ready." : "Add a task to give your next study session a starting point."), button("Add tasks →", "primary", () => { resetDraft(); dispatch({ type: "plan" }, "task-title"); }));
+    complete.append(renderTimer());
     main.append(complete);
     return;
   }
@@ -234,6 +345,7 @@ function renderFocus(main) {
     note.append(element("p", "eyebrow", "Where you left off"), element("p", "", task.note));
     card.append(note);
   }
+  card.append(renderTimer());
   const actions = element("div", "focus-actions");
   const done = button("Done & next →", "primary done-button", () => dispatch({ type: "complete" }, currentTaskAfterCompletion() ? "done-next" : "page-title"));
   done.id = "done-next";
@@ -281,6 +393,8 @@ function render() {
   renderFeedback();
   if (state.view === "plan") renderPlan($("main"));
   else renderFocus($("main"));
+  $("main").append(renderThoughts());
+  updateTimerDisplay();
 }
 
 $("undo-button").addEventListener("click", () => dispatch({ type: "undo" }, "page-title"));
@@ -299,6 +413,11 @@ $("confirm-replace").addEventListener("click", () => {
   $("replace-dialog").close();
   recordSave(storage.replace(state));
 });
+$("cancel-reset-time").addEventListener("click", () => $("reset-time-dialog").close());
+$("confirm-reset-time").addEventListener("click", () => {
+  $("reset-time-dialog").close();
+  dispatch({ type: "timer-reset" }, state.view === "focus" && currentTask(state) ? "timer-toggle" : "page-title");
+});
 $("download-saved").addEventListener("click", () => {
   const url = URL.createObjectURL(new Blob([storage.unreadableCopy()], { type: "text/plain" }));
   const link = document.createElement("a");
@@ -313,3 +432,18 @@ window.addEventListener("storage", event => {
 });
 updateStorageUI();
 render();
+
+// Only the numbers change each second, so typing and keyboard focus are undisturbed.
+setInterval(updateTimerDisplay, 1000);
+setInterval(() => {
+  if (state.timer.runningSince === null) return;
+  state = transition(state, { type: "timer-checkpoint", now: Date.now() });
+  recordSave(storage.save(state));
+}, 5000);
+
+window.addEventListener("pagehide", () => {
+  if (state.timer.runningSince === null) return;
+  state = transition(state, { type: "timer-pause", now: Date.now() });
+  recordSave(storage.save(state)); // Best effort: a browser crash might skip this event.
+});
+window.addEventListener("pageshow", event => { if (event.persisted) render(); });

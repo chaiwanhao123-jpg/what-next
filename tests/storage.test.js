@@ -66,3 +66,58 @@ test("replacement refuses to overwrite a copy that changed since loading", () =>
   assert.deepEqual(store.replace(planned()), { ok: false, issue: "conflict" });
   assert.equal(memory.getItem(STORAGE_KEY), "newer copy");
 });
+
+test("version 1 upgrades without changing tasks, notes, order, current task or Undo; loading doesn't write", () => {
+  let original = transition(planned(), { type: "start" });
+  original = transition(original, { type: "end", note: "Continue here" });
+  original = transition(original, { type: "add", id: "b", fields: { title: "Second" } });
+  original = transition(original, { type: "delete", id: "b" });
+  const { timer, thoughts, ...legacy } = original;
+  legacy.version = 1;
+  const raw = JSON.stringify(legacy);
+  const memory = memoryStorage(raw);
+  const store = createStorage(() => memory);
+  const loaded = store.load();
+  assert.equal(loaded.issue, null);
+  assert.deepEqual(loaded.state, { ...legacy, version: 2, timer: initialState().timer, thoughts: [] });
+  assert.equal(memory.getItem(STORAGE_KEY), raw);
+  assert.equal(store.save(loaded.state).ok, true);
+  assert.deepEqual(createStorage(() => memory).load().state, loaded.state);
+});
+
+test("reopening pauses at the saved checkpoint and preserves thoughts, review status, and thought Undo", () => {
+  const memory = memoryStorage();
+  const store = createStorage(() => memory);
+  store.load();
+  let state = transition(planned(), { type: "start", now: 1000 });
+  state = transition(state, { type: "thought-add", id: "idea", text: "Later", now: 11000 });
+  state = transition(state, { type: "thought-review", id: "idea", now: 11000 });
+  state = transition(state, { type: "thought-delete", id: "idea", now: 21000 });
+  store.save(state);
+  const reopened = createStorage(() => memory).load().state;
+  assert.equal(reopened.timer.elapsedMs, 20000);
+  assert.equal(reopened.timer.runningSince, null);
+  assert.equal(reopened.currentTaskId, "a");
+  assert.equal(transition(reopened, { type: "undo", now: 900000 }).thoughts[0].reviewed, true);
+});
+
+test("malformed version 2 time data is preserved without downgrading or resetting the saved copy", () => {
+  const raw = JSON.stringify({ ...planned(), timer: { elapsedMs: -1000, stretchMs: 0, runningSince: null } });
+  const memory = memoryStorage(raw);
+  const store = createStorage(() => memory);
+  assert.equal(store.load().issue, "invalid");
+  assert.equal(store.save(initialState()).ok, false);
+  assert.equal(memory.getItem(STORAGE_KEY), raw);
+});
+
+test("a failed first write after migration retains the original version 1 copy", () => {
+  const { timer, thoughts, ...legacy } = planned();
+  legacy.version = 1;
+  const raw = JSON.stringify(legacy);
+  const memory = memoryStorage(raw);
+  const store = createStorage(() => memory);
+  const state = store.load().state;
+  memory.setItem = () => { throw new Error("QuotaExceededError"); };
+  assert.equal(store.save(state).ok, false);
+  assert.equal(memory.getItem(STORAGE_KEY), raw);
+});

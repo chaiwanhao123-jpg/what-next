@@ -1,6 +1,20 @@
 // Pure state logic: no HTML, browser storage, or side effects.
+import { initialTimer, timerAt, resumeTimer, pauseTimer, validTimer } from "./timer.js";
+
 export function initialState() {
-  return { version: 1, tasks: [], currentTaskId: null, view: "plan", undo: null };
+  return { version: 2, tasks: [], currentTaskId: null, view: "plan", undo: null, timer: initialTimer(), thoughts: [] };
+}
+
+export function restoreState(saved) {
+  const state = structuredClone(saved);
+  if (state.version === 1) {
+    state.version = 2;
+    state.timer = initialTimer();
+    state.thoughts = [];
+  }
+  // Keep only time actually checkpointed; don't count time with the app closed.
+  state.timer = pauseTimer(state.timer);
+  return state;
 }
 
 export const pendingTasks = state => state.tasks.filter(task => !task.completed);
@@ -19,6 +33,9 @@ function details(fields) {
 export function transition(state, action) {
   // structuredClone is like Python's copy.deepcopy: don't mutate the old state.
   const next = structuredClone(state);
+  const now = action.now ?? next.timer.runningSince ?? 0;
+  if (!Number.isSafeInteger(now) || now < 0) throw new Error("Invalid timer timestamp.");
+  next.timer = timerAt(next.timer, now);
   const findTask = id => next.tasks.find(task => task.id === id);
   switch (action.type) {
     case "add":
@@ -51,6 +68,7 @@ export function transition(state, action) {
     case "start":
       next.currentTaskId = currentTask(next)?.id ?? pendingTasks(next)[0]?.id ?? null;
       next.view = "focus";
+      if (currentTask(next)) next.timer = resumeTimer(next.timer, now);
       break;
     case "complete": {
       const task = currentTask(next);
@@ -72,7 +90,9 @@ export function transition(state, action) {
     case "undo": {
       const undo = next.undo;
       if (!undo) break;
-      if (undo.kind === "delete") {
+      if (undo.kind === "thought-delete") {
+        next.thoughts.splice(Math.min(undo.index, next.thoughts.length), 0, undo.thought);
+      } else if (undo.kind === "delete") {
         next.tasks.splice(Math.min(undo.index, next.tasks.length), 0, undo.task);
         if (undo.wasCurrent) next.currentTaskId = undo.task.id;
       } else {
@@ -91,9 +111,43 @@ export function transition(state, action) {
       next.undo = null;
       break;
     }
+    case "timer-pause":
+      next.timer = pauseTimer(next.timer);
+      break;
+    case "timer-resume":
+      if (next.view === "focus" && currentTask(next)) next.timer = resumeTimer(next.timer, now);
+      break;
+    case "timer-reset":
+      next.timer = initialTimer();
+      break;
+    case "timer-checkpoint":
+      break; // timerAt() above has already accumulated the elapsed time.
+    case "thought-add": {
+      const text = String(action.text ?? "").trim();
+      if (!text) throw new Error("Write a thought before adding it.");
+      if (!action.id || next.thoughts.some(thought => thought.id === action.id) ||
+          (next.undo?.kind === "thought-delete" && next.undo.thought.id === action.id)) {
+        throw new Error("Thought ID must be unique.");
+      }
+      next.thoughts.push({ id: action.id, text, reviewed: false });
+      break;
+    }
+    case "thought-review": {
+      const thought = next.thoughts.find(item => item.id === action.id);
+      if (thought) thought.reviewed = !thought.reviewed;
+      break;
+    }
+    case "thought-delete": {
+      const index = next.thoughts.findIndex(thought => thought.id === action.id);
+      if (index < 0) break;
+      const [thought] = next.thoughts.splice(index, 1);
+      next.undo = { kind: "thought-delete", thought, index };
+      break;
+    }
     default:
       throw new Error(`Unknown action: ${action.type}`);
   }
+  if (next.view !== "focus" || !currentTask(next)) next.timer = pauseTimer(next.timer);
   return next;
 }
 
@@ -105,15 +159,26 @@ function validTask(task) {
 
 // Be conservative: an unknown format must never be silently replaced.
 export function isValidState(state) {
-  if (!state || state.version !== 1 || !Array.isArray(state.tasks) || !state.tasks.every(validTask)) return false;
+  if (!state || ![1, 2].includes(state.version) || !Array.isArray(state.tasks) || !state.tasks.every(validTask)) return false;
   const ids = new Set(state.tasks.map(task => task.id));
   if (ids.size !== state.tasks.length || !["plan", "focus"].includes(state.view)) return false;
   if (state.currentTaskId !== null && !state.tasks.some(task => task.id === state.currentTaskId && !task.completed)) return false;
   if (state.view === "focus" && pendingTasks(state).length > 0 && state.currentTaskId === null) return false;
+  if (state.version === 2) {
+    if (!validTimer(state.timer) || !Array.isArray(state.thoughts) || !state.thoughts.every(validThought)) return false;
+    if (new Set(state.thoughts.map(thought => thought.id)).size !== state.thoughts.length) return false;
+    if (state.timer.runningSince !== null && (state.view !== "focus" || !currentTask(state))) return false;
+  }
   if (state.undo === null) return true;
   const undo = state.undo;
   if (!undo || typeof undo !== "object") return false;
+  if (undo.kind === "thought-delete") return state.version === 2 && validThought(undo.thought) && !state.thoughts.some(thought => thought.id === undo.thought.id) && Number.isInteger(undo.index) && undo.index >= 0;
   if (undo.kind === "delete") return validTask(undo.task) && !ids.has(undo.task.id) && Number.isInteger(undo.index) && undo.index >= 0 && typeof undo.wasCurrent === "boolean" && (!undo.wasCurrent || !undo.task.completed);
   if (undo.kind === "complete") return state.tasks.some(task => task.id === undo.taskId && task.completed) && Number.isInteger(undo.pendingIndex) && undo.pendingIndex >= 0;
   return false;
+}
+
+function validThought(thought) {
+  return thought && typeof thought.id === "string" && thought.id.length > 0 &&
+    typeof thought.text === "string" && thought.text.trim().length > 0 && typeof thought.reviewed === "boolean";
 }

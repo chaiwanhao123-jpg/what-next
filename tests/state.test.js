@@ -95,7 +95,7 @@ test("undo completion retains later edits", () => {
 });
 
 test("validator rejects corrupt shapes, duplicate IDs, invalid current references and undo", () => {
-  for (const value of [null, {}, [], { ...initialState(), version: 2 }, { ...planned(), currentTaskId: "missing" }, { ...planned(), undo: {} }, { ...initialState(), tasks: [{ title: "a" }] }, { ...planned(), view: "focus" }]) {
+  for (const value of [null, {}, [], { ...initialState(), version: 999 }, { ...planned(), currentTaskId: "missing" }, { ...planned(), undo: {} }, { ...initialState(), tasks: [{ title: "a" }] }, { ...planned(), view: "focus" }]) {
     assert.equal(isValidState(value), false);
   }
   const duplicate = planned();

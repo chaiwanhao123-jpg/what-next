@@ -1,5 +1,6 @@
-import { initialState, isValidState } from "./state.js";
+import { initialState, isValidState, restoreState } from "./state.js";
 
+// Keep the original key so existing tasks remain accessible after upgrading.
 export const STORAGE_KEY = "what-next.state.v1";
 
 // A small adapter makes storage failures testable without a browser.
@@ -18,7 +19,7 @@ export function createStorage(getStorage) {
           if (!isValidState(parsed)) throw new Error("Unrecognized saved state");
           blocked = false;
           issue = null;
-          return { state: parsed, issue: null };
+          return { state: restoreState(parsed), issue: null };
         }
         blocked = false;
         issue = null;
